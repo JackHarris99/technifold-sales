@@ -15,8 +15,8 @@ export async function GET() {
       anonKeySet: !!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
       serviceKeySet: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
       url: process.env.NEXT_PUBLIC_SUPABASE_URL,
-      expectedUrl: 'https://zvrmxyabhhocqlhkpzzp.supabase.co',
-      urlMatches: process.env.NEXT_PUBLIC_SUPABASE_URL === 'https://zvrmxyabhhocqlhkpzzp.supabase.co',
+      expectedUrl: 'https://dxprjfxdwrcyphassgif.supabase.co',
+      urlMatches: process.env.NEXT_PUBLIC_SUPABASE_URL === 'https://dxprjfxdwrcyphassgif.supabase.co',
     },
     connection: {
       status: 'unknown',
