@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { createClient } from '@supabase/supabase-js';
 
 export async function GET() {
   const debugInfo: any = {
@@ -13,7 +13,10 @@ export async function GET() {
     supabase: {
       urlSet: !!process.env.NEXT_PUBLIC_SUPABASE_URL,
       anonKeySet: !!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
-      url: process.env.NEXT_PUBLIC_SUPABASE_URL?.substring(0, 30) + '...',
+      serviceKeySet: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
+      url: process.env.NEXT_PUBLIC_SUPABASE_URL,
+      expectedUrl: 'https://zvrmxyabhhocqlhkpzzp.supabase.co',
+      urlMatches: process.env.NEXT_PUBLIC_SUPABASE_URL === 'https://zvrmxyabhhocqlhkpzzp.supabase.co',
     },
     connection: {
       status: 'unknown',
@@ -23,7 +26,14 @@ export async function GET() {
   };
 
   try {
-    const supabase = createClient();
+    if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
+      throw new Error('Missing Supabase environment variables');
+    }
+
+    const supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+    );
     
     // Try to fetch a simple count
     const { count, error } = await supabase
