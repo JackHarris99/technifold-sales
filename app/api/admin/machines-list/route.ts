@@ -1,106 +1,120 @@
-import { NextRequest, NextResponse } from "next/server";
+// app/api/admin/machines-list/route.ts
+import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  { auth: { persistSession: false } }
-);
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
-export async function GET(req: NextRequest) {
+// Utility: pull a sample tool code out of the evidence array
+function firstToolCode(evidence: any[] | null): string | null {
+  if (!Array.isArray(evidence)) return null;
+  for (const e of evidence) {
+    if (e && typeof e === "object" && typeof e.tool_product_code === "string") {
+      return e.tool_product_code as string;
+    }
+  }
+  return null;
+}
+
+export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
-    const q = (searchParams.get("q") || "").toLowerCase();
-    const status = searchParams.get("status") || "";
-    const limit = Math.min(parseInt(searchParams.get("limit") || "200", 10), 1000);
+    const q = (searchParams.get("q") || "").trim();
+    const statusFilter = (searchParams.get("status") || "").trim(); // '', 'probable', 'confirmed', 'rejected'
+    const limit = Math.min(parseInt(searchParams.get("limit") || "200", 10) || 200, 500);
 
-    // Pull from company_machine_links (has evidence + IDs),
-    // join machines (manufacturer/model) and customers via company_id.
-    // For rows that only have company_ref, we’ll still return the code and leave name null.
-    const { data, error } = await supabase
+    const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+      auth: { persistSession: false },
+    });
+
+    // Base select with FKs so PostgREST can join (we added the FKs earlier)
+    // NOTE: we pull raw IDs so the UI can call confirm/reject endpoints.
+    let query = supabase
       .from("company_machine_links")
       .select(
-        `
-        id,
-        company_id,
-        company_ref,
-        machine_id,
-        status,
-        confidence,
-        evidence,
-        updated_at,
-        machines:machine_id (
-          manufacturer,
-          model
-        ),
-        customer:company_id (
-          customer_code,
-          company_name
-        )
-      `
+        [
+          "id",                // link_id
+          "company_id",
+          "company_ref",
+          "machine_id",
+          "status",
+          "confidence",
+          "evidence",
+          "updated_at",
+          "customers!company_id (customer_code, company_name)", // join via FK company_id
+          "machines!machine_id (manufacturer, model)",          // join via FK machine_id
+        ].join(",")
       )
+      .order("status", { ascending: true })
+      .order("confidence", { ascending: false })
       .limit(limit);
 
-    if (error) throw error;
+    // Apply status filter if provided
+    if (statusFilter === "probable" || statusFilter === "confirmed" || statusFilter === "rejected") {
+      query = query.eq("status", statusFilter);
+    }
 
-    const rows = (data || [])
-      .map((r: any) => {
-        const ev: any[] = Array.isArray(r.evidence) ? r.evidence : [];
-        const sampleTool = ev.length > 0 ? ev[0]?.tool_product_code ?? null : null;
+    // Execute
+    const { data, error } = await query;
 
-        const customer_code: string | null =
-          r.customer?.customer_code ?? r.company_ref ?? null;
-        const company_name: string | null = r.customer?.company_name ?? null;
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
 
-        const manufacturer: string | null = r.machines?.manufacturer ?? null;
-        const model: string | null = r.machines?.model ?? null;
+    // Shape rows + client-side search across joined fields + tool code
+    type Row = {
+      id: string;
+      company_id: string | null;
+      company_ref: string | null;
+      machine_id: string;
+      status: string;
+      confidence: number;
+      evidence: any[] | null;
+      updated_at: string;
+      customers?: { customer_code: string | null; company_name: string | null } | null;
+      machines?: { manufacturer: string | null; model: string | null } | null;
+    };
 
-        return {
-          link_id: r.id as string,
-          customer_code,
-          company_name,
-          manufacturer,
-          model,
-          status: r.status as string,
-          confidence: Number(r.confidence ?? 0),
-          evidence_count: ev.length,
-          sample_tool_code: sampleTool,
-          updated_at: r.updated_at as string,
+    const shaped = (data as Row[]).map((r) => {
+      const toolCode = firstToolCode(r.evidence || null);
+      return {
+        link_id: r.id,
+        company_id: r.company_id,
+        company_ref: r.company_ref,
+        machine_id: r.machine_id,
+        status: r.status,
+        confidence: r.confidence,
+        updated_at: r.updated_at,
+        evidence_count: Array.isArray(r.evidence) ? r.evidence.length : 0,
+        sample_tool_code: toolCode,
+        customer_code: r.customers?.customer_code ?? null,
+        company_name: r.customers?.company_name ?? null,
+        manufacturer: r.machines?.manufacturer ?? null,
+        model: r.machines?.model ?? null,
+      };
+    });
 
-          // IDs needed by the Confirm/Reject handler:
-          link_company_id: r.company_id as string | null,
-          link_company_ref: r.company_ref as string | null,
-          link_machine_id: r.machine_id as string | null,
-        };
-      })
-      // optional filtering in-memory (simple & safe)
-      .filter((row: any) => {
-        if (status && row.status !== status) return false;
-        if (!q) return true;
-        const hay =
-          (row.customer_code || "") +
-          " " +
-          (row.company_name || "") +
-          " " +
-          (row.manufacturer || "") +
-          " " +
-          (row.model || "") +
-          " " +
-          (row.sample_tool_code || "");
-        return hay.toLowerCase().includes(q);
-      })
-      .sort((a: any, b: any) => {
-        const ar = a.status === "confirmed" ? 0 : 1;
-        const br = b.status === "confirmed" ? 0 : 1;
-        if (ar !== br) return ar - br;
-        if (b.confidence !== a.confidence) return b.confidence - a.confidence;
-        return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
-      });
+    // Client-side search (covers code, name, mfr, model, tool code); keeps API simple & fast
+    const needle = q.toLowerCase();
+    const filtered = needle
+      ? shaped.filter((r) => {
+          return (
+            (r.customer_code ?? "").toLowerCase().includes(needle) ||
+            (r.company_name ?? "").toLowerCase().includes(needle) ||
+            (r.manufacturer ?? "").toLowerCase().includes(needle) ||
+            (r.model ?? "").toLowerCase().includes(needle) ||
+            (r.sample_tool_code ?? "").toLowerCase().includes(needle)
+          );
+        })
+      : shaped;
 
-    return NextResponse.json({ count: rows.length, rows });
+    return NextResponse.json({
+      count: filtered.length,
+      rows: filtered,
+    });
   } catch (err: any) {
-    console.error(err);
-    return NextResponse.json({ error: err.message ?? "Server error" }, { status: 500 });
+    return NextResponse.json({ error: err?.message ?? "Unknown error" }, { status: 500 });
   }
 }
+
 
